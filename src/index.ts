@@ -9,4 +9,8 @@ import { DenoiseWorklet } from './DenoiseWorklet'
  * prAudio.use({ denoise: prDenoise })
  * ```
  */
-export const prDenoise = { DenoiseWorklet }
+export const prDenoise = {
+  DenoiseWorklet,
+  // 供 PrAudioStream.use() 做采样率校验，未提供时库会默认视为支持
+  isSupported: DenoiseWorklet.isSupported
+}

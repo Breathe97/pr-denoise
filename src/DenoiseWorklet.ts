@@ -7,6 +7,9 @@ const PROCESSOR_NAME = '@sapphi-red/web-noise-suppressor/gtcrn'
 // 默认支持的最大声道数，需要覆盖输入声道数，否则多通道会被丢掉、输出变单声道
 const DEFAULT_MAX_CHANNELS = 2
 
+// GTCRN 只吃 16k / 48k，其它采样率进 worklet 会直接抛错
+const SUPPORTED_SAMPLE_RATES = [16000, 48000]
+
 /**
  * GTCRN 降噪引擎
  * 48kHz 下帧长 768（16ms），48kHz / 16kHz 均支持，这里按 48kHz 使用
@@ -22,8 +25,20 @@ export class DenoiseWorklet {
   // wasm 二进制缓存，避免重复下载
   denoiseWasmBinary?: ArrayBuffer
 
+  // addModule 缓存，避免同一 context 重复注册 processor 报重名错
+  private modulePromise?: Promise<void>
+
+  private moduleAudioContext?: AudioContext
+
   constructor(audioContext: AudioContext) {
     this.audioContext = audioContext
+  }
+
+  /**
+   * 当前上下文的采样率是否被 GTCRN 支持（供 PrAudioStream.use() 做能力校验）
+   */
+  static isSupported = (audioContext: AudioContext) => {
+    return SUPPORTED_SAMPLE_RATES.includes(audioContext.sampleRate)
   }
 
   /**
@@ -32,10 +47,21 @@ export class DenoiseWorklet {
   createDenoiseWorkletNode = async () => {
     this.destroy()
 
-    await this.audioContext.audioWorklet.addModule(denoiseWorkletProcessorUrl)
+    // 同一 context 只注册一次 processor，反复开关降噪时复用
+    if (!this.modulePromise || this.moduleAudioContext !== this.audioContext) {
+      this.moduleAudioContext = this.audioContext
+      this.modulePromise = this.audioContext.audioWorklet.addModule(denoiseWorkletProcessorUrl).catch((error) => {
+        // 注册失败清缓存，允许下次重试
+        this.modulePromise = undefined
+        throw error
+      })
+    }
+    await this.modulePromise
 
+    // wasm 只拉一次，后续复用
     if (!this.denoiseWasmBinary) {
       const response = await fetch(denoiseWasmUrl)
+      if (!response.ok) throw new Error(`GTCRN wasm 加载失败：${response.status} ${denoiseWasmUrl}`)
       this.denoiseWasmBinary = await response.arrayBuffer()
     }
 
